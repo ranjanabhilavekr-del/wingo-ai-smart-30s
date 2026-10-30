@@ -1,0 +1,494 @@
+import { useEffect, useMemo, useState } from 'react';
+
+const apiKey = 'local-dev-key';
+
+const colorOptions = ['red', 'green', 'violet'];
+
+async function fetchJson(url, options = {}) {
+  const headers = {
+    'Content-Type': 'application/json',
+    ...(options.headers || {}),
+    'x-api-key': apiKey,
+  };
+
+  const response = await fetch(url, { ...options, headers });
+  const contentType = response.headers.get('content-type') || '';
+  const payload = contentType.includes('application/json') ? await response.json() : await response.text();
+
+  if (!response.ok) {
+    const message = typeof payload === 'string' ? payload : payload?.error || 'Request failed';
+    throw new Error(message);
+  }
+
+  return payload;
+}
+
+function formatNumber(value) {
+  return Number.isFinite(value) ? value.toFixed(1) : '0.0';
+}
+
+function App() {
+  const [dashboard, setDashboard] = useState({
+    summary: {
+      totalResults: 0,
+      averageNumber: 0,
+      lastResult: null,
+      bigCount: 0,
+      smallCount: 0,
+      redCount: 0,
+      greenCount: 0,
+      violetCount: 0,
+    },
+    results: [],
+    periods: [],
+    trend: [],
+    colors: { red: 0, green: 0, violet: 0 },
+    bigSmall: { big: 0, small: 0 },
+  });
+  const [resultForm, setResultForm] = useState({
+    period_number: '',
+    number: '0',
+    color: 'red',
+  });
+  const [periodForm, setPeriodForm] = useState({ period_number: '', label: '', notes: '' });
+  const [integration, setIntegration] = useState({
+    status: 'not_configured',
+    enabled: false,
+    endpoint: 'https://your-authorized-game-api.example',
+  });
+  const [statusMessage, setStatusMessage] = useState('System ready.');
+  const [loading, setLoading] = useState(true);
+
+  const loadDashboard = async () => {
+    try {
+      setLoading(true);
+      const [dashboardData, integrationData] = await Promise.all([
+        fetchJson('/api/dashboard'),
+        fetchJson('/api/integration-status'),
+      ]);
+      setDashboard(dashboardData);
+      setIntegration(integrationData);
+      setStatusMessage('Dashboard refreshed successfully.');
+    } catch (error) {
+      setStatusMessage(error.message || 'Unable to load dashboard.');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    loadDashboard();
+  }, []);
+
+  const nextPeriodNumber = useMemo(() => {
+    if (dashboard.results.length === 0) return 1;
+    return Math.max(...dashboard.results.map((item) => Number(item.period_number))) + 1;
+  }, [dashboard.results]);
+
+  const handleResultSubmit = async (event) => {
+    event.preventDefault();
+    const number = Number(resultForm.number);
+    const periodNumber = Number(resultForm.period_number || nextPeriodNumber);
+
+    if (!Number.isInteger(number) || number < 0 || number > 9) {
+      setStatusMessage('The result number must be an integer from 0 to 9.');
+      return;
+    }
+
+    if (!periodNumber || periodNumber < 1) {
+      setStatusMessage('Please enter a valid period number.');
+      return;
+    }
+
+    try {
+      await fetchJson('/api/results', {
+        method: 'POST',
+        body: JSON.stringify({
+          period_number: periodNumber,
+          number,
+          color: resultForm.color,
+        }),
+      });
+
+      setResultForm({ period_number: '', number: '0', color: 'red' });
+      await loadDashboard();
+      setStatusMessage(`Saved result for period ${periodNumber}.`);
+    } catch (error) {
+      setStatusMessage(error.message || 'Unable to save result.');
+    }
+  };
+
+  const handlePeriodSubmit = async (event) => {
+    event.preventDefault();
+    const periodNumber = Number(periodForm.period_number || nextPeriodNumber);
+
+    if (!periodNumber || periodNumber < 1) {
+      setStatusMessage('Enter a valid period number to track.');
+      return;
+    }
+
+    try {
+      await fetchJson('/api/periods', {
+        method: 'POST',
+        body: JSON.stringify({
+          period_number: periodNumber,
+          label: periodForm.label || `Period ${periodNumber}`,
+          notes: periodForm.notes || '',
+        }),
+      });
+
+      setPeriodForm({ period_number: '', label: '', notes: '' });
+      await loadDashboard();
+      setStatusMessage(`Stored period ${periodNumber}.`);
+    } catch (error) {
+      setStatusMessage(error.message || 'Unable to save period.');
+    }
+  };
+
+  const handleDeleteResult = async (periodNumber) => {
+    try {
+      await fetchJson(`/api/results/${periodNumber}`, { method: 'DELETE' });
+      await loadDashboard();
+      setStatusMessage(`Removed period ${periodNumber} result.`);
+    } catch (error) {
+      setStatusMessage(error.message || 'Unable to delete result.');
+    }
+  };
+
+  const handleDeletePeriod = async (periodNumber) => {
+    try {
+      await fetchJson(`/api/periods/${periodNumber}`, { method: 'DELETE' });
+      await loadDashboard();
+      setStatusMessage(`Removed tracked period ${periodNumber}.`);
+    } catch (error) {
+      setStatusMessage(error.message || 'Unable to delete period.');
+    }
+  };
+
+  const handleToggleIntegration = async () => {
+    try {
+      const nextState = !integration.enabled;
+      const response = await fetchJson('/api/integration-status', {
+        method: 'PUT',
+        body: JSON.stringify({ enabled: nextState, endpoint: integration.endpoint, status: nextState ? 'enabled' : 'paused' }),
+      });
+      setIntegration(response);
+      setStatusMessage(nextState ? 'Authorized integration mode enabled.' : 'Integration paused.');
+    } catch (error) {
+      setStatusMessage(error.message || 'Unable to update integration state.');
+    }
+  };
+
+  const handleClearHistory = async () => {
+    try {
+      await fetchJson('/api/results', { method: 'DELETE' });
+      await loadDashboard();
+      setStatusMessage('History cleared successfully.');
+    } catch (error) {
+      setStatusMessage(error.message || 'Unable to clear history.');
+    }
+  };
+
+  const maxColors = Math.max(...Object.values(dashboard.colors || { red: 0, green: 0, violet: 0 }), 1);
+  const maxBigSmall = Math.max(...Object.values(dashboard.bigSmall || { big: 0, small: 0 }), 1);
+
+  return (
+    <div className="app-shell">
+      <header className="topbar">
+        <div>
+          <p className="eyebrow">Prediction analysis</p>
+          <h1>WINGO AI SMART 30S</h1>
+        </div>
+        <div className="header-actions">
+          <span className={`status-pill ${integration.enabled ? 'enabled' : 'paused'}`}>
+            {integration.enabled ? 'Integration on' : 'Analysis only'}
+          </span>
+          <button type="button" className="secondary-button" onClick={loadDashboard}>
+            Refresh
+          </button>
+        </div>
+      </header>
+
+      <main className="dashboard-grid">
+        <section className="hero-panel card">
+          <div>
+            <p className="small-label">Signal overview</p>
+            <h2>30s market monitor</h2>
+          </div>
+          <div className="hero-message">
+            <strong>Important:</strong> This dashboard provides statistical analysis only. It does not guarantee predictions or outcomes.
+          </div>
+        </section>
+
+        <section className="stats-row">
+          <article className="stat-card card">
+            <span>Total periods</span>
+            <strong>{dashboard.summary.totalResults}</strong>
+          </article>
+          <article className="stat-card card accent-green">
+            <span>Big</span>
+            <strong>{dashboard.summary.bigCount}</strong>
+          </article>
+          <article className="stat-card card accent-red">
+            <span>Small</span>
+            <strong>{dashboard.summary.smallCount}</strong>
+          </article>
+          <article className="stat-card card accent-violet">
+            <span>Average</span>
+            <strong>{formatNumber(dashboard.summary.averageNumber)}</strong>
+          </article>
+        </section>
+
+        <section className="entry-card card">
+          <div className="section-header">
+            <h3>Manual result entry</h3>
+          </div>
+          <form onSubmit={handleResultSubmit} className="result-form">
+            <label>
+              Period number
+              <input
+                type="number"
+                min="1"
+                value={resultForm.period_number || ''}
+                placeholder={String(nextPeriodNumber)}
+                onChange={(event) => setResultForm({ ...resultForm, period_number: event.target.value })}
+              />
+            </label>
+
+            <label>
+              Result number
+              <input
+                type="number"
+                min="0"
+                max="9"
+                value={resultForm.number}
+                onChange={(event) => setResultForm({ ...resultForm, number: event.target.value })}
+              />
+            </label>
+
+            <label>
+              Color frequency
+              <select
+                value={resultForm.color}
+                onChange={(event) => setResultForm({ ...resultForm, color: event.target.value })}
+              >
+                {colorOptions.map((option) => (
+                  <option key={option} value={option}>
+                    {option}
+                  </option>
+                ))}
+              </select>
+            </label>
+
+            <div className="button-row">
+              <button type="submit" className="primary-button">Save result</button>
+              <button type="button" className="secondary-button" onClick={handleClearHistory}>Clear history</button>
+            </div>
+          </form>
+        </section>
+
+        <section className="analysis-grid">
+          <article className="card">
+            <div className="section-header">
+              <h3>Big/Small statistics</h3>
+            </div>
+            <div className="bar-group">
+              {['big', 'small'].map((mode) => (
+                <div key={mode} className="bar-row">
+                  <span>{mode}</span>
+                  <div className="bar-track">
+                    <div
+                      className={`bar-fill ${mode === 'big' ? 'green' : 'red'}`}
+                      style={{ width: `${(dashboard.bigSmall[mode] / maxBigSmall) * 100}%` }}
+                    />
+                  </div>
+                  <strong>{dashboard.bigSmall[mode] || 0}</strong>
+                </div>
+              ))}
+            </div>
+          </article>
+
+          <article className="card">
+            <div className="section-header">
+              <h3>Colour frequency analysis</h3>
+            </div>
+            <div className="bar-group">
+              {['red', 'green', 'violet'].map((color) => (
+                <div key={color} className="bar-row">
+                  <span>{color}</span>
+                  <div className="bar-track">
+                    <div
+                      className={`bar-fill ${color}`}
+                      style={{ width: `${(dashboard.colors[color] / maxColors) * 100}%` }}
+                    />
+                  </div>
+                  <strong>{dashboard.colors[color] || 0}</strong>
+                </div>
+              ))}
+            </div>
+          </article>
+        </section>
+
+        <section className="card">
+          <div className="section-header">
+            <h3>Statistical trend analysis</h3>
+          </div>
+          <div className="trend-list">
+            {dashboard.trend.length === 0 ? (
+              <p className="empty-state">No trend data saved yet.</p>
+            ) : (
+              dashboard.trend.slice(-8).map((item) => (
+                <div key={item.period_number} className="trend-item">
+                  <span>#{item.period_number}</span>
+                  <strong>{item.number}</strong>
+                  <small>{item.big_small}</small>
+                  <small className={`chip ${item.color}`}>{item.color}</small>
+                </div>
+              ))
+            )}
+          </div>
+        </section>
+
+        <section className="card">
+          <div className="section-header">
+            <h3>Previous result history</h3>
+          </div>
+          <div className="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Period</th>
+                  <th>Number</th>
+                  <th>Big/Small</th>
+                  <th>Color</th>
+                  <th>Action</th>
+                </tr>
+              </thead>
+              <tbody>
+                {dashboard.results.length === 0 ? (
+                  <tr>
+                    <td colSpan="5" className="empty-state">No results logged yet.</td>
+                  </tr>
+                ) : (
+                  [...dashboard.results].slice().reverse().map((result) => (
+                    <tr key={result.id}>
+                      <td>{result.period_number}</td>
+                      <td>{result.number}</td>
+                      <td>{result.big_small}</td>
+                      <td>
+                        <span className={`chip ${result.color}`}>{result.color}</span>
+                      </td>
+                      <td>
+                        <button type="button" onClick={() => handleDeleteResult(result.period_number)} className="danger-button">
+                          Remove
+                        </button>
+                      </td>
+                    </tr>
+                  ))
+                )}
+              </tbody>
+            </table>
+          </div>
+        </section>
+
+        <section className="card">
+          <div className="section-header">
+            <h3>Period number management</h3>
+          </div>
+          <form onSubmit={handlePeriodSubmit} className="period-form">
+            <label>
+              Period number
+              <input
+                type="number"
+                min="1"
+                value={periodForm.period_number || ''}
+                placeholder={String(nextPeriodNumber)}
+                onChange={(event) => setPeriodForm({ ...periodForm, period_number: event.target.value })}
+              />
+            </label>
+            <label>
+              Label
+              <input
+                type="text"
+                value={periodForm.label}
+                onChange={(event) => setPeriodForm({ ...periodForm, label: event.target.value })}
+                placeholder="Example: Early shift"
+              />
+            </label>
+            <label>
+              Notes
+              <textarea
+                rows="3"
+                value={periodForm.notes}
+                onChange={(event) => setPeriodForm({ ...periodForm, notes: event.target.value })}
+                placeholder="Add a quick analysis note"
+              />
+            </label>
+            <button type="submit" className="primary-button">Save period</button>
+          </form>
+
+          <div className="period-list">
+            {dashboard.periods.length === 0 ? (
+              <p className="empty-state">No tracked periods yet.</p>
+            ) : (
+              dashboard.periods.map((period) => (
+                <div className="period-row" key={period.id}>
+                  <div>
+                    <strong>#{period.period_number}</strong>
+                    <p>{period.label}</p>
+                  </div>
+                  <div className="period-meta">
+                    <small>{period.notes || 'No notes'}</small>
+                    <button type="button" className="danger-button" onClick={() => handleDeletePeriod(period.period_number)}>
+                      Delete
+                    </button>
+                  </div>
+                </div>
+              ))
+            )}
+          </div>
+        </section>
+
+        <section className="card integration-card">
+          <div className="section-header">
+            <h3>Future authorized game API</h3>
+          </div>
+          <p>
+            This module is prepared for secure, authorized external integration when credentials and endpoint access are configured.
+          </p>
+          <div className="integration-row">
+            <div>
+              <span className="small-label">Endpoint</span>
+              <strong>{integration.endpoint}</strong>
+            </div>
+            <button type="button" className="secondary-button" onClick={handleToggleIntegration}>
+              {integration.enabled ? 'Pause integration' : 'Enable integration'}
+            </button>
+          </div>
+        </section>
+
+        <section className="card github-card">
+          <div className="section-header">
+            <h3>GitHub integration</h3>
+          </div>
+          <p>Project source and deployment status are linked to the public GitHub repository.</p>
+          <div className="button-row">
+            <a href="https://github.com/ranjanabhilavekr-del/wingo-ai-smart-30s" target="_blank" rel="noreferrer" className="primary-button">
+              Open GitHub repo
+            </a>
+            <a href="https://github.com/ranjanabhilavekr-del/wingo-ai-smart-30s/issues" target="_blank" rel="noreferrer" className="secondary-button">
+              Issues tracker
+            </a>
+          </div>
+        </section>
+      </main>
+
+      <footer className="status-bar">
+        <span>{loading ? 'Loading...' : 'Live dashboard active'}</span>
+        <span>{statusMessage}</span>
+      </footer>
+    </div>
+  );
+}
+
+export default App;
